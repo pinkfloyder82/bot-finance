@@ -5,7 +5,7 @@ from typing import Tuple, Optional, Dict, Any
 PAYMENT_KEYWORDS = {
     'Carta': ['carta', 'carte', 'bancomat', 'pos', 'debito', 'credito', 'card'],
     'Contanti': ['contanti', 'contante', 'cash', 'cassa'],
-    'Bonifico': ['bonifico', 'bonif']
+    'Bonifico': ['bonifico', 'bonif','giroconto']
 }
 
 # Categorie predefinite con sinonimi e parole chiave comuni
@@ -14,12 +14,12 @@ CATEGORIES = {
         'stipendio', 'stipendi', 'busta paga', 'paga', 'accredito', 'bonifico ricevuto',
         'bonifico in entrata', 'fattura', 'compenso', 'parcella', 'rimborso', 'vincita', 'regalo ricevuto',
         'cashback', 'dividendo', 'dividendi', 'rendita', 'vendita', 'incasso', 'entrata', 'premio',
-        'versamento', 'versamenti', 'deposito', 'depositi', 'ricarica'
+        'versamento', 'versamenti', 'deposito', 'depositi', 'ricarica','giroconto'
     ],
     'Spesa e Supermercato': [
         'spesa', 'supermercato', 'esselunga', 'conad', 'coop', 'lidl', 'carrefour',
         'eurospin', 'md', 'crai', 'alimentari', 'frutta', 'verdura', 'carne', 'pesce',
-        'panificio', 'pane', 'latte', 'forno', 'alimentare', 'panetteria', 'salumeria'
+        'panificio', 'pane', 'latte', 'forno', 'alimentare', 'panetteria', 'salumeria','dodeca','dodecà','deco','decò'
     ],
     'Ristorazione e Bar': [
         'pranzo', 'cena', 'colazione', 'aperitivo', 'apericena', 'bar', 'caffe', 'caffè',
