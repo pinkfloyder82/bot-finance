@@ -1,0 +1,13 @@
+# File sensibili e credenziali (NON caricare mai su GitHub!)
+.env
+credentials.json
+
+# Ambienti virtuali Python
+.venv/
+.venv*/
+__pycache__/
+*.pyc
+
+# Log e file temporanei
+*.log
+
