@@ -12,8 +12,9 @@ PAYMENT_KEYWORDS = {
 CATEGORIES = {
     'Stipendio ed Entrate': [
         'stipendio', 'stipendi', 'busta paga', 'paga', 'accredito', 'bonifico ricevuto',
-        'fattura', 'compenso', 'parcella', 'rimborso', 'vincita', 'regalo ricevuto',
-        'cashback', 'dividendo', 'dividendi', 'rendita', 'vendita', 'incasso', 'entrata', 'premio'
+        'bonifico in entrata', 'fattura', 'compenso', 'parcella', 'rimborso', 'vincita', 'regalo ricevuto',
+        'cashback', 'dividendo', 'dividendi', 'rendita', 'vendita', 'incasso', 'entrata', 'premio',
+        'versamento', 'versamenti', 'deposito', 'depositi', 'ricarica'
     ],
     'Spesa e Supermercato': [
         'spesa', 'supermercato', 'esselunga', 'conad', 'coop', 'lidl', 'carrefour',

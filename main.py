@@ -201,7 +201,9 @@ async def annulla_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Impossibile annullare in <b>{label_foglio}</b>:\n{html.escape(msg)}", parse_mode=ParseMode.HTML)
         return
 
-    imp_str = f"{deleted_info['importo']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+    raw_imp = abs(deleted_info['importo'])
+    segno_del = "+" if deleted_info['tipo'].lower() == "entrata" else "-"
+    imp_str = f"{segno_del}{raw_imp:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
     simbolo_tipo = "🟢 Entrata" if deleted_info['tipo'].lower() == "entrata" else "🔴 Uscita"
 
     testo = (
@@ -276,8 +278,14 @@ async def gestisci_messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE)
         date_obj=now
     )
 
-    imp_str = f"{importo:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-    simbolo_tipo = "🟢 Entrata" if tipo.lower() == "entrata" else "🔴 Uscita"
+    if tipo.lower() == "uscita":
+        segno_str = "-"
+        simbolo_tipo = "🔴 Uscita"
+    else:
+        segno_str = "+"
+        simbolo_tipo = "🟢 Entrata"
+
+    imp_str = f"{segno_str}{abs(importo):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
     if sheets_ok:
         conferma = (

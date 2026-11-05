@@ -17,18 +17,20 @@ MESI_ITALIANI = {
 
 
 def to_float(val: Any) -> float:
-    """Converte un valore in float gestendo sia formato italiano (virgola) che standard (punto)."""
+    """Converte un valore in float gestendo sia formato italiano (virgola) che standard (punto) e segno negativo."""
     if isinstance(val, (int, float)):
         return float(val)
     if not val:
         return 0.0
     s = str(val).replace('€', '').replace(' ', '').strip()
+    sign = -1.0 if s.startswith('-') else 1.0
+    s = s.lstrip('+-')
     if '.' in s and ',' in s:
         s = s.replace('.', '').replace(',', '.')
     else:
         s = s.replace(',', '.')
     try:
-        return float(s)
+        return sign * float(s)
     except ValueError:
         return 0.0
 
@@ -141,7 +143,9 @@ class SheetsService:
 
         try:
             sheet = self.get_or_create_monthly_sheet(date_obj)
-            row = [date_str, user_name, movement_type, category, amount, reason, payment_method]
+            # Per le uscite salviamo l'importo come negativo sul foglio Google (-15.00), per le entrate positivo (+1500.00)
+            final_amount = -abs(amount) if movement_type.lower() == "uscita" else abs(amount)
+            row = [date_str, user_name, movement_type, category, final_amount, reason, payment_method]
             sheet.append_row(row, value_input_option="USER_ENTERED")
             return True, "Registrata con successo"
         except Exception as e:
@@ -231,13 +235,14 @@ class SheetsService:
                 else:
                     continue
 
+                val_abs = abs(importo)
                 if tipo.lower() == "entrata":
-                    total_entrate += importo
-                    users_summary[utente]["entrate"] += importo
+                    total_entrate += val_abs
+                    users_summary[utente]["entrate"] += val_abs
                 else:
-                    total_uscite += importo
-                    categories_uscite[categoria] += importo
-                    users_summary[utente]["uscite"] += importo
+                    total_uscite += val_abs
+                    categories_uscite[categoria] += val_abs
+                    users_summary[utente]["uscite"] += val_abs
 
             saldo = total_entrate - total_uscite
 
