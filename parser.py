@@ -35,7 +35,9 @@ CATEGORIES = {
     'Casa e Utenze': [
         'affitto', 'condominio', 'bolletta', 'bollette', 'luce', 'gas', 'enel', 'eni plenitude',
         'a2a', 'acqua', 'tari', 'rifiuti', 'internet', 'wifi', 'fibra', 'tim', 'vodafone',
-        'iliad', 'fastweb', 'mutuo', 'ikea', 'leroy merlin', 'ferramenta', 'arredo', 'casa'
+        'iliad', 'fastweb', 'mutuo', 'ikea', 'leroy merlin', 'ferramenta', 'arredo', 'casa','stucco','stucchi','tende',
+        'tenda','tappeto','tappeti', 'pittura','imbianchino','imbianchini','idraulico','idraulici','elettricista','elettricisti',
+        'lavori casa','lavori domestici','lavori domestico','lavori domestica'
     ],
     'Salute e Cura': [
         'farmacia', 'farmaci', 'medicine', 'dottore', 'medico', 'visita', 'dentista',
@@ -54,17 +56,65 @@ CATEGORIES = {
         'cinema', 'film', 'concerto', 'teatro', 'museo', 'vacanza', 'hotel', 'b&b',
         'volo', 'ryanair', 'easyjet', 'libri', 'libro', 'kindle', 'netflix', 'spotify',
         'disney', 'prime', 'videogiochi', 'playstation', 'xbox', 'steam', 'palestra',
-        'calcetto', 'sport', 'piscina', 'abbonamento'
+        'calcetto', 'sport', 'piscina', 'abbonamento','tip tap','tap','tiptap','tip-tap'
     ]
 }
 
+# Elenco ordinato delle categorie disponibili per la selezione tramite pulsanti
+AVAILABLE_CATEGORIES = [
+    'Spesa e Supermercato',
+    'Ristorazione e Bar',
+    'Trasporti e Auto',
+    'Casa e Utenze',
+    'Salute e Cura',
+    'Animali',
+    'Shopping e Abbigliamento',
+    'Svago e Tempo Libero',
+    'Stipendio ed Entrate',
+    'Altro'
+]
 
-def classify_movement(text: str, explicit_sign: Optional[str] = None) -> Tuple[str, str]:
+# Icone per i pulsanti di Telegram
+CATEGORY_ICONS = {
+    'Spesa e Supermercato': '🛒',
+    'Ristorazione e Bar': '🍽️',
+    'Trasporti e Auto': '🚗',
+    'Casa e Utenze': '🏠',
+    'Salute e Cura': '💊',
+    'Animali': '🐶',
+    'Shopping e Abbigliamento': '🛍️',
+    'Svago e Tempo Libero': '🎟️',
+    'Stipendio ed Entrate': '💼',
+    'Altro': '📦'
+}
+
+
+def classify_movement(
+    text: str,
+    explicit_sign: Optional[str] = None,
+    custom_rules: Optional[Dict[str, str]] = None
+) -> Tuple[str, str]:
     """
     Determina se il movimento è un'Entrata o un'Uscita e assegna la categoria opportuna.
+    Controlla prima le regole di auto-apprendimento personalizzate, poi il dizionario predefinito.
     Ritorna: (tipo: 'Entrata'|'Uscita', categoria: str)
     """
     text_lower = text.lower()
+
+    # 0. Controlla prima le regole di auto-apprendimento memorizzate
+    if custom_rules:
+        # Ordina per lunghezza decrescente per dare precedenza a espressioni composte
+        sorted_kws = sorted(custom_rules.keys(), key=len, reverse=True)
+        for kw in sorted_kws:
+            if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
+                matched_cat = custom_rules[kw]
+                if explicit_sign == '+':
+                    mov_type = 'Entrata'
+                elif explicit_sign == '-':
+                    mov_type = 'Uscita'
+                else:
+                    mov_type = 'Entrata' if matched_cat == 'Stipendio ed Entrate' else 'Uscita'
+                return mov_type, matched_cat
 
     # 1. Riconoscimento Tipo (Entrata vs Uscita)
     if explicit_sign == '+':
@@ -94,7 +144,10 @@ def classify_movement(text: str, explicit_sign: Optional[str] = None) -> Tuple[s
     return movement_type, detected_category
 
 
-def parse_expense_message(text: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+def parse_expense_message(
+    text: str,
+    custom_rules: Optional[Dict[str, str]] = None
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
     """
     Analizza un messaggio di testo per estrarre:
     - importo (float)
@@ -212,8 +265,8 @@ def parse_expense_message(text: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
             "Esempio: <code>15 pizza contanti</code>"
         )
 
-    # 4. Determina Tipo (Entrata/Uscita) e Categoria
-    movement_type, category = classify_movement(cleaned_reason, explicit_sign)
+    # 4. Determina Tipo (Entrata/Uscita) e Categoria (usando anche eventuali regole personalizzate)
+    movement_type, category = classify_movement(cleaned_reason, explicit_sign, custom_rules=custom_rules)
 
     return True, {
         'importo': amount,

@@ -8,6 +8,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 DEFAULT_HEADERS = ["Data", "Utente", "Tipo", "Categoria", "Importo (€)", "Motivo Spesa", "Modalità Pagamento"]
+DICTIONARY_TAB_NAME = "Dizionario_Categorie"
+DICTIONARY_HEADERS = ["Parola Chiave", "Categoria", "Aggiunta Da", "Data"]
 
 MESI_ITALIANI = {
     1: "Gennaio", 2: "Febbraio", 3: "Marzo", 4: "Aprile",
@@ -260,3 +262,48 @@ class SheetsService:
             self._spreadsheet = None
             self._client = None
             return False, None, f"Errore nel calcolo del riepilogo: {str(e)}"
+
+    def get_or_create_dictionary_sheet(self) -> gspread.Worksheet:
+        """Restituisce (o crea se non esiste) la scheda Dizionario_Categorie per l'auto-apprendimento."""
+        spreadsheet = self._get_spreadsheet()
+        worksheets = spreadsheet.worksheets()
+        for ws in worksheets:
+            if ws.title == DICTIONARY_TAB_NAME:
+                return ws
+        new_ws = spreadsheet.add_worksheet(title=DICTIONARY_TAB_NAME, rows=500, cols=4)
+        new_ws.append_row(DICTIONARY_HEADERS, value_input_option="USER_ENTERED")
+        return new_ws
+
+    def load_dictionary_rules(self) -> Dict[str, str]:
+        """Legge tutte le regole personalizzate salvate nella scheda Dizionario_Categorie."""
+        configured, _ = self.is_configured()
+        if not configured:
+            return {}
+        try:
+            ws = self.get_or_create_dictionary_sheet()
+            all_rows = ws.get_all_values()
+            rules = {}
+            if len(all_rows) > 1:
+                for row in all_rows[1:]:
+                    if len(row) >= 2:
+                        kw = row[0].strip().lower()
+                        cat = row[1].strip()
+                        if kw and cat:
+                            rules[kw] = cat
+            return rules
+        except Exception as e:
+            print(f"Avviso lettura dizionario categorie da '{self.spreadsheet_name}': {e}")
+            return {}
+
+    def save_dictionary_rule(self, keyword: str, category: str, added_by: str, date_str: str) -> bool:
+        """Salva una nuova regola di auto-apprendimento nella scheda Dizionario_Categorie."""
+        configured, _ = self.is_configured()
+        if not configured:
+            return False
+        try:
+            ws = self.get_or_create_dictionary_sheet()
+            ws.append_row([keyword.strip().lower(), category, added_by, date_str], value_input_option="USER_ENTERED")
+            return True
+        except Exception as e:
+            print(f"Errore salvataggio regola dizionario in '{self.spreadsheet_name}': {e}")
+            return False

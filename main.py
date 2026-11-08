@@ -1,20 +1,22 @@
 import os
 import html
+import uuid
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from dotenv import load_dotenv
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
 
-from parser import parse_expense_message
+from parser import parse_expense_message, AVAILABLE_CATEGORIES, CATEGORY_ICONS
 from sheets_service import SheetsService
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
@@ -55,10 +57,10 @@ CREDENTIALS_FILE = os.getenv("CREDENTIALS_FILE", "credentials.json")
 SPREADSHEET_GIUSEPPE = os.getenv("SPREADSHEET_GIUSEPPE", os.getenv("SPREADSHEET_PERSONALE", "finanze_personale"))
 SPREADSHEET_CARMEN = os.getenv("SPREADSHEET_CARMEN", "finanze_carmen")
 
-USER_GIUSEPPE_ID = int(os.getenv("USER_GIUSEPPE_ID", "132279185")) if os.getenv("USER_GIUSEPPE_ID", "132279185").isdigit() else 132279185
+USER_GIUSEPPE_ID = int(os.getenv("USER_GIUSEPPE_ID")) if os.getenv("USER_GIUSEPPE_ID", "").isdigit() else None
 USER_CARMEN_ID = int(os.getenv("USER_CARMEN_ID")) if os.getenv("USER_CARMEN_ID", "").isdigit() else None
 
-# Parsing mappa fogli personali (es. "132279185:finanze_personale,987654321:finanze_carmen")
+# Parsing mappa fogli personali (es. "ID_1:nome_foglio_1,ID_2:nome_foglio_2")
 PERSONAL_SHEETS_MAP: Dict[int, str] = {}
 raw_personal = os.getenv("PERSONAL_SHEETS", "")
 for entry in raw_personal.split(","):
@@ -90,6 +92,10 @@ for uid in PERSONAL_SHEETS_MAP.keys():
 # Cache dei servizi Google Sheets per ciascun foglio
 sheets_instances: Dict[str, SheetsService] = {}
 
+# Memoria dinamica per l'auto-apprendimento delle categorie
+CUSTOM_RULES: Dict[str, str] = {}
+LAST_RULES_RELOAD: float = 0.0
+
 
 def get_sheets_service(sheet_name: str) -> SheetsService:
     """Restituisce (o istanzia se nuovo) il servizio per il foglio specificato."""
@@ -99,6 +105,60 @@ def get_sheets_service(sheet_name: str) -> SheetsService:
             spreadsheet_name=sheet_name
         )
     return sheets_instances[sheet_name]
+
+
+def ricarica_regole_personalizzate(force: bool = False) -> Dict[str, str]:
+    """
+    Ricarica le regole di auto-apprendimento dal foglio comune Casa.
+    Usa una cache in memoria per evitare chiamate lente a ogni messaggio.
+    """
+    global CUSTOM_RULES, LAST_RULES_RELOAD
+    import time
+    now_ts = time.time()
+    if not force and CUSTOM_RULES and (now_ts - LAST_RULES_RELOAD < 300):
+        return CUSTOM_RULES
+
+    try:
+        service_casa = get_sheets_service(SPREADSHEET_CASA)
+        loaded = service_casa.load_dictionary_rules()
+        if loaded:
+            CUSTOM_RULES.update(loaded)
+        LAST_RULES_RELOAD = now_ts
+        print(f"Auto-apprendimento: {len(CUSTOM_RULES)} regole personalizzate attive.")
+    except Exception as e:
+        print(f"Avviso caricamento regole auto-apprendimento: {e}")
+
+    return CUSTOM_RULES
+
+
+def aggiungi_regola_autoapprendimento(keyword: str, category: str, user_name: str, date_str: str):
+    """
+    Memorizza la nuova categoria sia nella memoria del bot che nel foglio Google comune (finanze_casa).
+    In questo modo diventa permanente e valida per TUTTI i fogli (Casa, Giuseppe e Carmen).
+    """
+    global CUSTOM_RULES
+    kw_clean = keyword.strip().lower()
+    if not kw_clean or not category or category == 'Altro':
+        return
+
+    # 1. Aggiorna immediatamente la memoria locale (valida per i messaggi successivi)
+    CUSTOM_RULES[kw_clean] = category
+
+    # 2. Salva in background su Google Sheets nel tab Dizionario_Categorie
+    def _salva_su_foglio():
+        try:
+            service_casa = get_sheets_service(SPREADSHEET_CASA)
+            service_casa.save_dictionary_rule(
+                keyword=kw_clean,
+                category=category,
+                added_by=user_name,
+                date_str=date_str
+            )
+            print(f"Auto-apprendimento: salvata nuova regola '{kw_clean}' -> '{category}'")
+        except Exception as e:
+            print(f"Errore salvataggio regola auto-apprendimento: {e}")
+
+    threading.Thread(target=_salva_su_foglio, daemon=True).start()
 
 
 def get_user_personal_sheet(user_id: int, user_first_name: str = "") -> Optional[str]:
@@ -111,11 +171,9 @@ def get_user_personal_sheet(user_id: int, user_first_name: str = "") -> Optional
     if user_id in PERSONAL_SHEETS_MAP:
         return PERSONAL_SHEETS_MAP[user_id]
 
-    # Fallback per nome nel caso Carmen scriva prima di aver impostato USER_CARMEN_ID
     if "carmen" in (user_first_name or "").lower():
         return SPREADSHEET_CARMEN
 
-    # Se c'è solo un utente registrato, fallback
     if len(PERSONAL_SHEETS_MAP) == 1:
         return list(PERSONAL_SHEETS_MAP.values())[0]
 
@@ -131,6 +189,101 @@ def is_user_authorized(user_id: int, user_first_name: str = "") -> bool:
     if "carmen" in (user_first_name or "").lower():
         return True
     return False
+
+
+def crea_tastiera_categorie(expense_id: str) -> InlineKeyboardMarkup:
+    """Crea una tastiera a 2 colonne con i pulsanti delle categorie disponibili."""
+    keyboard = []
+    row = []
+    for idx, cat_name in enumerate(AVAILABLE_CATEGORIES):
+        icon = CATEGORY_ICONS.get(cat_name, "🏷️")
+        short_name = cat_name.split(" e ")[0] if " e " in cat_name else cat_name
+        btn_text = f"{icon} {short_name}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"cat:{expense_id}:{idx}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
+
+def salva_movimento(
+    date_str: str,
+    user_name: str,
+    user_id: int,
+    user_first_name: str,
+    movement_type: str,
+    category: str,
+    amount: float,
+    reason: str,
+    payment_method: str,
+    destinazione: str,
+    date_obj: datetime
+) -> Tuple[bool, str, str]:
+    """
+    Salva il movimento nel foglio corretto (Casa o Personale) e restituisce:
+    (successo, messaggio_formattato, nome_foglio_label)
+    """
+    if destinazione == 'personale':
+        target_sheet_name = get_user_personal_sheet(user_id, user_first_name)
+        if not target_sheet_name:
+            return False, f"⚠️ Non ho trovato un foglio personale configurato per il tuo ID (<code>{user_id}</code>).", ""
+        target_service = get_sheets_service(target_sheet_name)
+        nome_foglio_label = f"Personale ({target_sheet_name})"
+    else:
+        target_service = get_sheets_service(SPREADSHEET_CASA)
+        nome_foglio_label = f"Casa ({SPREADSHEET_CASA})"
+
+    sheets_ok, sheets_msg = target_service.append_expense(
+        date_str=date_str,
+        user_name=user_name,
+        movement_type=movement_type,
+        category=category,
+        amount=amount,
+        reason=reason,
+        payment_method=payment_method,
+        date_obj=date_obj
+    )
+
+    if movement_type.lower() == "uscita":
+        segno_str = "-"
+        simbolo_tipo = "🔴 Uscita"
+    else:
+        segno_str = "+"
+        simbolo_tipo = "🟢 Entrata"
+
+    imp_str = f"{segno_str}{abs(amount):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    if sheets_ok:
+        conferma = (
+            f"✅ <b>Movimento registrato su {html.escape(nome_foglio_label)}!</b>\n\n"
+            f"📅 <b>Data:</b> {date_str}\n"
+            f"👤 <b>Utente:</b> {html.escape(user_name)}\n"
+            f"🔖 <b>Tipo:</b> {simbolo_tipo}\n"
+            f"🏷️ <b>Categoria:</b> {html.escape(category)}\n"
+            f"💰 <b>Importo:</b> {imp_str}\n"
+            f"📝 <b>Motivo:</b> {html.escape(reason)}\n"
+            f"💳 <b>Pagamento:</b> {payment_method}\n\n"
+            f"<i>💡 Usa /annulla {'pers' if destinazione == 'personale' else ''} se vuoi cancellarlo.</i>"
+        )
+    else:
+        conferma = (
+            f"⚠️ <b>Movimento compreso ma non salvato su {html.escape(nome_foglio_label)}:</b>\n"
+            f"<code>{html.escape(sheets_msg)}</code>\n\n"
+            f"<b>Riepilogo dati estratti:</b>\n"
+            f"• Destinazione: {html.escape(nome_foglio_label)}\n"
+            f"• Data: {date_str}\n"
+            f"• Utente: {html.escape(user_name)}\n"
+            f"• Tipo: {simbolo_tipo}\n"
+            f"• Categoria: {html.escape(category)}\n"
+            f"• Importo: {imp_str}\n"
+            f"• Motivo: {html.escape(reason)}\n"
+            f"• Metodo: {payment_method}\n\n"
+            f"<i>Verifica di aver condiviso il foglio con l'email del service account!</i>"
+        )
+
+    return sheets_ok, conferma, nome_foglio_label
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,6 +454,79 @@ async def annulla_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(testo, parse_mode=ParseMode.HTML)
 
 
+async def category_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gestisce la risposta dell'utente quando clicca un pulsante di categoria."""
+    query = update.callback_query
+    await query.answer()
+
+    cb_data = query.data
+    if not cb_data or not cb_data.startswith("cat:"):
+        return
+
+    parts = cb_data.split(":")
+    if len(parts) != 3:
+        return
+
+    _, expense_id, cat_idx_str = parts
+    try:
+        cat_idx = int(cat_idx_str)
+        chosen_category = AVAILABLE_CATEGORIES[cat_idx]
+    except (ValueError, IndexError):
+        return
+
+    pending_map = context.user_data.get('pending_expenses', {})
+    pending = pending_map.pop(expense_id, None)
+
+    if not pending:
+        await query.edit_message_text("⚠️ Movimento già registrato o sessione scaduta.", parse_mode=ParseMode.HTML)
+        return
+
+    # Se seleziona "Stipendio ed Entrate", aggiorna anche il tipo a Entrata
+    movement_type = "Entrata" if chosen_category == "Stipendio ed Entrate" else pending['tipo']
+
+    # Auto-apprendimento: se l'utente ha scelto una categoria reale, salvala per le prossime volte!
+    if chosen_category != "Altro":
+        aggiungi_regola_autoapprendimento(
+            keyword=pending['reason'],
+            category=chosen_category,
+            user_name=pending['user_name'],
+            date_str=pending['date_str']
+        )
+
+    ok, testo_conferma, _ = salva_movimento(
+        date_str=pending['date_str'],
+        user_name=pending['user_name'],
+        user_id=pending['user_id'],
+        user_first_name=pending['user_first_name'],
+        movement_type=movement_type,
+        category=chosen_category,
+        amount=pending['amount'],
+        reason=pending['reason'],
+        payment_method=pending['payment_method'],
+        destinazione=pending['destinazione'],
+        date_obj=pending['date_obj']
+    )
+
+    if ok and chosen_category != "Altro":
+        testo_conferma += "\n\n🧠 <i>Categoria memorizzata per le prossime volte!</i>"
+
+    await query.edit_message_text(testo_conferma, parse_mode=ParseMode.HTML)
+
+
+async def ricarica_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /ricarica: forza l'aggiornamento immediato delle categorie dal foglio Google."""
+    user = update.effective_user
+    if not is_user_authorized(user.id, user.first_name):
+        await update.message.reply_text("⛔ Non sei autorizzato a usare questo comando.", parse_mode=ParseMode.HTML)
+        return
+
+    rules = ricarica_regole_personalizzate(force=True)
+    await update.message.reply_text(
+        f"🔄 <b>Regole aggiornate!</b>\nAttualmente ci sono <b>{len(rules)}</b> parole memorizzate nell'auto-apprendimento.",
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def gestisci_messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gestore principale per tutti i messaggi di testo ordinari."""
     user = update.effective_user
@@ -320,8 +546,11 @@ async def gestisci_messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not text:
         return
 
-    # 2. Analisi e parsing del messaggio
-    success, data, error_msg = parse_expense_message(text)
+    # 2. Carica le regole personalizzate di auto-apprendimento
+    custom_rules = ricarica_regole_personalizzate()
+
+    # 3. Analisi e parsing del messaggio
+    success, data, error_msg = parse_expense_message(text, custom_rules=custom_rules)
     if not success:
         await update.message.reply_text(error_msg, parse_mode=ParseMode.HTML)
         return
@@ -340,70 +569,49 @@ async def gestisci_messaggio(update: Update, context: ContextTypes.DEFAULT_TYPE)
     categoria = data['categoria']
     destinazione = data['destinazione']  # 'casa' o 'personale'
 
-    # 4. Selezione del foglio di destinazione
-    if destinazione == 'personale':
-        target_sheet_name = get_user_personal_sheet(user_id, user.first_name)
-        if not target_sheet_name:
-            await update.message.reply_text(
-                f"⚠️ Non ho trovato un foglio personale configurato per il tuo ID (<code>{user_id}</code>).\n"
-                f"Aggiungi il tuo ID a <code>PERSONAL_SHEETS</code> nel file <code>.env</code>!",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        target_service = get_sheets_service(target_sheet_name)
-        nome_foglio_label = f"Personale ({target_sheet_name})"
-    else:
-        target_service = get_sheets_service(SPREADSHEET_CASA)
-        nome_foglio_label = f"Casa ({SPREADSHEET_CASA})"
+    # 4. Se la categoria non è stata riconosciuta ('Altro'), chiediamo all'utente tramite pulsanti interattivi!
+    if categoria == 'Altro':
+        expense_id = uuid.uuid4().hex[:8]
+        if 'pending_expenses' not in context.user_data:
+            context.user_data['pending_expenses'] = {}
 
-    # 5. Scrittura su Google Sheets
-    sheets_ok, sheets_msg = target_service.append_expense(
+        context.user_data['pending_expenses'][expense_id] = {
+            'date_str': today_str,
+            'user_name': user_display_name,
+            'user_id': user_id,
+            'user_first_name': user.first_name,
+            'tipo': tipo,
+            'amount': importo,
+            'reason': motivo,
+            'payment_method': metodo,
+            'destinazione': destinazione,
+            'date_obj': now
+        }
+
+        markup = crea_tastiera_categorie(expense_id)
+        imp_str = f"{importo:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+        richiesta = (
+            f"🤔 Non ho riconosciuto la categoria per:\n"
+            f"<b>{html.escape(motivo)}</b> ({imp_str} in {metodo})\n\n"
+            f"<i>Seleziona a quale categoria appartiene:</i>"
+        )
+        await update.message.reply_text(richiesta, reply_markup=markup, parse_mode=ParseMode.HTML)
+        return
+
+    # 5. Se invece la categoria era già stata riconosciuta in automatico, salva direttamente
+    ok, conferma, _ = salva_movimento(
         date_str=today_str,
         user_name=user_display_name,
+        user_id=user_id,
+        user_first_name=user.first_name,
         movement_type=tipo,
         category=categoria,
         amount=importo,
         reason=motivo,
         payment_method=metodo,
+        destinazione=destinazione,
         date_obj=now
     )
-
-    if tipo.lower() == "uscita":
-        segno_str = "-"
-        simbolo_tipo = "🔴 Uscita"
-    else:
-        segno_str = "+"
-        simbolo_tipo = "🟢 Entrata"
-
-    imp_str = f"{segno_str}{abs(importo):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-
-    if sheets_ok:
-        conferma = (
-            f"✅ <b>Movimento registrato su {html.escape(nome_foglio_label)}!</b>\n\n"
-            f"📅 <b>Data:</b> {today_str}\n"
-            f"👤 <b>Utente:</b> {html.escape(user_display_name)}\n"
-            f"🔖 <b>Tipo:</b> {simbolo_tipo}\n"
-            f"🏷️ <b>Categoria:</b> {html.escape(categoria)}\n"
-            f"💰 <b>Importo:</b> {imp_str}\n"
-            f"📝 <b>Motivo:</b> {html.escape(motivo)}\n"
-            f"💳 <b>Pagamento:</b> {metodo}\n\n"
-            f"<i>💡 Usa /annulla {'pers' if destinazione == 'personale' else ''} se vuoi cancellarlo.</i>"
-        )
-    else:
-        conferma = (
-            f"⚠️ <b>Movimento compreso ma non salvato su {html.escape(nome_foglio_label)}:</b>\n"
-            f"<code>{html.escape(sheets_msg)}</code>\n\n"
-            f"<b>Riepilogo dati estratti:</b>\n"
-            f"• Destinazione: {html.escape(nome_foglio_label)}\n"
-            f"• Data: {today_str}\n"
-            f"• Utente: {html.escape(user_display_name)}\n"
-            f"• Tipo: {simbolo_tipo}\n"
-            f"• Categoria: {html.escape(categoria)}\n"
-            f"• Importo: {imp_str}\n"
-            f"• Motivo: {html.escape(motivo)}\n"
-            f"• Metodo: {metodo}\n\n"
-            f"<i>Verifica di aver condiviso il foglio con l'email del service account!</i>"
-        )
 
     await update.message.reply_text(conferma, parse_mode=ParseMode.HTML)
 
@@ -430,6 +638,13 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("mese", mese_command))
     app.add_handler(CommandHandler("annulla", annulla_command))
+    app.add_handler(CommandHandler("ricarica", ricarica_command))
+
+    # Pre-carica le regole di auto-apprendimento in background all'avvio
+    threading.Thread(target=ricarica_regole_personalizzate, kwargs={"force": True}, daemon=True).start()
+
+    # Gestione click pulsanti categoria
+    app.add_handler(CallbackQueryHandler(category_callback_handler, pattern=r"^cat:"))
 
     # Messaggi di testo ordinari
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), gestisci_messaggio))
